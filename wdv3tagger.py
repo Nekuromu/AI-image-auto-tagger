@@ -48,20 +48,24 @@ def download_model(model_repo):
 def prepare_image(image, target_size):
     canvas = Image.new("RGBA", image.size, (255, 255, 255))
     canvas.paste(image, mask=image.split()[3] if image.mode == 'RGBA' else None)
-    image = canvas.convert("RGB")
+    rgb_image = canvas.convert("RGB")
+    canvas.close()  # Close intermediate image
 
     # Pad image to a square
-    max_dim = max(image.size)
-    pad_left = (max_dim - image.size[0]) // 2
-    pad_top = (max_dim - image.size[1]) // 2
+    max_dim = max(rgb_image.size)
+    pad_left = (max_dim - rgb_image.size[0]) // 2
+    pad_top = (max_dim - rgb_image.size[1]) // 2
     padded_image = Image.new("RGB", (max_dim, max_dim), (255, 255, 255))
-    padded_image.paste(image, (pad_left, pad_top))
+    padded_image.paste(rgb_image, (pad_left, pad_top))
+    rgb_image.close()  # Close intermediate image
 
     # Resize
-    padded_image = padded_image.resize((target_size, target_size), Image.Resampling.BICUBIC)
+    resized_image = padded_image.resize((target_size, target_size), Image.Resampling.BICUBIC)
+    padded_image.close()  # Close intermediate image
 
     # Convert to numpy array
-    image_array = np.asarray(padded_image, dtype=np.float32)[..., [2, 1, 0]]
+    image_array = np.asarray(resized_image, dtype=np.float32)[..., [2, 1, 0]]
+    resized_image.close()  # Close final intermediate image
     
     return np.expand_dims(image_array, axis=0) # Add batch dimension
 
@@ -341,7 +345,18 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
     
     status_message = f"DONE -- Processed files: {len(processed_files)} -- Skipped files: {len(skipped_files)} -- See console for more details"
     print("\033[92mDONE\033[0m")
-    return status_message, "\n".join(processed_files), "\n".join(skipped_files)
+    
+    # Limit output to prevent memory bloat with large batches (30k+ images)
+    # Show first 50 and last 50, or all if fewer than 100
+    def format_file_list(files, limit=50):
+        if len(files) <= limit * 2:
+            return "\n".join(files)
+        return "\n".join(files[:limit]) + f"\n\n... [{len(files) - limit*2} files omitted] ...\n\n" + "\n".join(files[-limit:])
+    
+    processed_output = format_file_list(processed_files)
+    skipped_output = format_file_list(skipped_files)
+    
+    return status_message, processed_output, skipped_output
 
 iface = gr.Interface(
     fn=tag_images,
