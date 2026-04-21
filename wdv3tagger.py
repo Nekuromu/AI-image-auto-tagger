@@ -9,6 +9,7 @@ from PIL import Image
 import huggingface_hub
 from exiftool import ExifToolHelper
 from typing import Iterator
+import time
 
 #increase CSV limit for Flag report
 max_int = sys.maxsize
@@ -268,8 +269,8 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
                 if os.path.isfile(file_path) and has_image_extension(file_path):
                     yield file_path
 
-    def print_progress_bar(current, total, bar_length=40):
-        """Display a progress bar in the terminal."""
+    def print_progress_bar(current, total, start_time, bar_length=40):
+        """Display a progress bar with time remaining estimate."""
         if total == 0:
             return
         
@@ -279,8 +280,32 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
         # Build the bar: filled with █, empty with ░
         bar = '█' * filled_length + '░' * (bar_length - filled_length)
         
-        # \r returns cursor to start of line, end='' prevents newline
-        print(f'\r[{bar}] {current}/{total} ({percent*100:.1f}%)', end='', flush=True)
+        # Calculate time remaining
+        elapsed_time = time.time() - start_time
+        if current > 0:
+            avg_time_per_image = elapsed_time / current
+            remaining_images = total - current
+            eta_seconds = avg_time_per_image * remaining_images
+            
+            # Format ETA nicely
+            hours = int(eta_seconds // 3600)
+            minutes = int((eta_seconds % 3600) // 60)
+            seconds = int(eta_seconds % 60)
+            
+            if hours > 0:
+                eta_str = f"{hours}h {minutes}m {seconds}s"
+            elif minutes > 0:
+                eta_str = f"{minutes}m {seconds}s"
+            else:
+                eta_str = f"{seconds}s"
+            
+            # Images per second
+            speed = current / elapsed_time if elapsed_time > 0 else 0
+            
+            # \r returns cursor to start of line, end='' prevents newline
+            print(f'\r[{bar}] {current}/{total} ({percent*100:.1f}%) | {speed:.1f} img/s | ETA: {eta_str}   ', end='', flush=True)
+        else:
+            print(f'\r[{bar}] {current}/{total} ({percent*100:.1f}%)', end='', flush=True)
     
     # Count total images first (fast extension check only)
     print("Counting images...")
@@ -295,6 +320,8 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
     
     try:
         total_processed = 0
+        start_time = time.time()  # Track start time for ETA calculation
+        
         for image_path in image_list:
             try:
                 # Validate file format if using metadata mode
@@ -321,13 +348,13 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
                     total_processed += 1
                     
                     # Update progress bar for every image
-                    print_progress_bar(total_processed, total_images)
+                    print_progress_bar(total_processed, total_images, start_time)
                         
             except Exception as e:
                 print(f"\nError processing {image_path}: {str(e)}")
                 skipped_files.append(os.path.basename(image_path))
                 # Reprint progress bar after error message
-                print_progress_bar(total_processed, total_images)
+                print_progress_bar(total_processed, total_images, start_time)
     except FileNotFoundError:
         error_message = f"Error: The specified directory does not exist."
         print(error_message)
