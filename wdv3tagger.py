@@ -269,8 +269,8 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
                 if os.path.isfile(file_path) and has_image_extension(file_path):
                     yield file_path
 
-    def print_progress_bar(current, total, start_time, bar_length=40):
-        """Display a progress bar with time remaining estimate."""
+    def print_progress_bar(current, total, start_time, current_file="", bar_length=40):
+        """Display a progress bar with time remaining estimate and current file."""
         if total == 0:
             return
         
@@ -302,8 +302,11 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
             # Images per second
             speed = current / elapsed_time if elapsed_time > 0 else 0
             
+            # Truncate filename if too long (keep first 30 chars)
+            display_file = current_file[:30] + "..." if len(current_file) > 30 else current_file
+            
             # \r returns cursor to start of line, end='' prevents newline
-            print(f'\r[{bar}] {current}/{total} ({percent*100:.1f}%) | {speed:.1f} img/s | ETA: {eta_str}   ', end='', flush=True)
+            print(f'\r[{bar}] {current}/{total} ({percent*100:.1f}%) | {speed:.1f} img/s | ETA: {eta_str} | {display_file}     ', end='', flush=True)
         else:
             print(f'\r[{bar}] {current}/{total} ({percent*100:.1f}%)', end='', flush=True)
     
@@ -323,6 +326,8 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
         start_time = time.time()  # Track start time for ETA calculation
         
         for image_path in image_list:
+            current_file = os.path.basename(image_path)
+            
             try:
                 # Validate file format if using metadata mode
                 if output_to == "Metadata":
@@ -348,13 +353,13 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
                     total_processed += 1
                     
                     # Update progress bar for every image
-                    print_progress_bar(total_processed, total_images, start_time)
+                    print_progress_bar(total_processed, total_images, start_time, current_file)
                         
             except Exception as e:
                 print(f"\nError processing {image_path}: {str(e)}")
                 skipped_files.append(os.path.basename(image_path))
                 # Reprint progress bar after error message
-                print_progress_bar(total_processed, total_images, start_time)
+                print_progress_bar(total_processed, total_images, start_time, current_file)
     except FileNotFoundError:
         error_message = f"Error: The specified directory does not exist."
         print(error_message)
