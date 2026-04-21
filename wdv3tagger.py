@@ -8,6 +8,7 @@ import onnxruntime as rt
 from PIL import Image
 import huggingface_hub
 from exiftool import ExifToolHelper
+from typing import Iterator
 
 #increase CSV limit for Flag report
 max_int = sys.maxsize
@@ -57,7 +58,7 @@ def prepare_image(image, target_size):
     padded_image.paste(image, (pad_left, pad_top))
 
     # Resize
-    padded_image = padded_image.resize((target_size, target_size), Image.BICUBIC)
+    padded_image = padded_image.resize((target_size, target_size), Image.Resampling.BICUBIC)
 
     # Convert to numpy array
     image_array = np.asarray(padded_image, dtype=np.float32)[..., [2, 1, 0]]
@@ -243,7 +244,7 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
                 print(f"Error processing {caption_file_path}: {str(e)}")
 
     # Yield image paths with validated file formats
-    def get_image_paths(img_folder: str, recurse: bool) -> iter:
+    def get_image_paths(img_folder: str, recurse: bool) -> Iterator[str]:
         
         if recurse:
             for root, _, files in os.walk(img_folder):
@@ -267,6 +268,26 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
                         continue
                     yield file_path
 
+    def print_progress_bar(current, total, bar_length=40):
+        """Display a progress bar in the terminal."""
+        if total == 0:
+            return
+        
+        percent = float(current) / total
+        filled_length = int(bar_length * percent)
+        
+        # Build the bar: filled with █, empty with ░
+        bar = '█' * filled_length + '░' * (bar_length - filled_length)
+        
+        # \r returns cursor to start of line, end='' prevents newline
+        print(f'\r[{bar}] {current}/{total} ({percent*100:.1f}%)', end='', flush=True)
+    
+    # Count total images first (so we know 100%)
+    print("Counting images...")
+    image_list = list(get_image_paths(image_folder, recursive))
+    total_images = len(image_list)
+    print(f"Found {total_images} images to process\n")
+    
     # Create a single ExifTool instance for all images (prevents subprocess leak)
     et = None
     if output_to == "Metadata":
@@ -274,7 +295,7 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
     
     try:
         total_processed = 0
-        for image_path in get_image_paths(image_folder, recursive):
+        for image_path in image_list:
             try:
                 with Image.open(image_path) as image:
                     processed_image = prepare_image(image, target_size)
@@ -291,13 +312,14 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
                     processed_files.append(os.path.basename(image_path))
                     total_processed += 1
                     
-                    # Progress indicator every 100 images
-                    if total_processed % 100 == 0:
-                        print(f"\033[94mProgress: {total_processed} images processed...\033[0m")
+                    # Update progress bar for every image
+                    print_progress_bar(total_processed, total_images)
                         
             except Exception as e:
-                print(f"Error processing {image_path}: {str(e)}")
+                print(f"\nError processing {image_path}: {str(e)}")
                 skipped_files.append(os.path.basename(image_path))
+                # Reprint progress bar after error message
+                print_progress_bar(total_processed, total_images)
     except FileNotFoundError:
         error_message = f"Error: The specified directory does not exist."
         print(error_message)
@@ -310,6 +332,8 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
             except:
                 pass
     
+    # Print newline after progress bar completes
+    print()
     
     status_message = f"DONE -- Processed files: {len(processed_files)} -- Skipped files: {len(skipped_files)} -- See console for more details"
     print("\033[92mDONE\033[0m")
