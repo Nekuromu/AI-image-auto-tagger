@@ -124,9 +124,16 @@ def process_predictions_with_thresholds(preds, tag_data, character_thresh, gener
 
     return final_tags
 
+# Fast extension check for counting (no ExifTool subprocess overhead)
+def has_image_extension(file_path: str) -> bool:
+    """Quick check if file has a supported image extension."""
+    ext = os.path.splitext(file_path)[1].lower().lstrip('.')
+    return ext in type_map
+
 # Check whether image extensions are set correctly and filter out unsupported ones
-def validate_file_format(file_path: str, output_to) -> tuple:
-   
+# Uses ExifTool instance passed from caller to avoid subprocess overhead
+def validate_file_format(et, file_path: str, output_to) -> tuple:
+    """Validate file format using MIME type check. Requires ExifTool instance."""
     ext = os.path.splitext(file_path)[1].lower().lstrip('.')
     
     if output_to == "Metadata" and ext == "bmp":
@@ -134,9 +141,8 @@ def validate_file_format(file_path: str, output_to) -> tuple:
         return (False, msg, file_path)
     
     try:
-        with ExifToolHelper(encoding="utf-8") as et:
-            metadata = et.get_tags([file_path], 'File:MIMEType')[0]
-            actual_mime = metadata.get('File:MIMEType', '')
+        metadata = et.get_tags([file_path], 'File:MIMEType')[0]
+        actual_mime = metadata.get('File:MIMEType', '')
     except Exception as e:
         msg = f"Error reading metadata: {str(e)}"
         return (False, msg, file_path)
@@ -158,7 +164,7 @@ def validate_file_format(file_path: str, output_to) -> tuple:
             if not os.path.exists(new_file_path):
                 try:
                     os.rename(file_path, new_file_path)
-                    print(f"Auto-corrected extension: Renamed '{os.path.basename(file_path)}' to '{os.path.basename(new_file_path)}'")
+                    print(f"\nAuto-corrected extension: Renamed '{os.path.basename(file_path)}' to '{os.path.basename(new_file_path)}'")
                     return (True, None, new_file_path)
                 except Exception as e:
                     msg = f"Error correcting extension: {str(e)}"
@@ -243,29 +249,19 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
             except Exception as e:
                 print(f"Error processing {caption_file_path}: {str(e)}")
 
-    # Yield image paths with validated file formats
-    def get_image_paths(img_folder: str, recurse: bool) -> Iterator[str]:
-        
+    # Quick scan for counting - just check extensions (fast)
+    def get_image_paths_fast(img_folder: str, recurse: bool) -> Iterator[str]:
+        """Fast scan that only checks file extensions, no MIME validation."""
         if recurse:
             for root, _, files in os.walk(img_folder):
                 for file in files:
                     file_path = os.path.join(root, file)
-                    if os.path.isfile(file_path):
-                        valid, msg, file_path = validate_file_format(file_path, output_to)
-                        if not valid:
-                            print(f"Skipping {file_path}: {msg}")
-                            skipped_files.append(os.path.basename(file_path))
-                            continue
+                    if os.path.isfile(file_path) and has_image_extension(file_path):
                         yield file_path
         else:
             for file in os.listdir(img_folder):
                 file_path = os.path.join(img_folder, file)
-                if os.path.isfile(file_path):   
-                    valid, msg, file_path = validate_file_format(file_path, output_to)
-                    if not valid:
-                        print(f"Skipping {file_path}: {msg}")
-                        skipped_files.append(os.path.basename(file_path))
-                        continue
+                if os.path.isfile(file_path) and has_image_extension(file_path):
                     yield file_path
 
     def print_progress_bar(current, total, bar_length=40):
@@ -282,11 +278,11 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
         # \r returns cursor to start of line, end='' prevents newline
         print(f'\r[{bar}] {current}/{total} ({percent*100:.1f}%)', end='', flush=True)
     
-    # Count total images first (so we know 100%)
+    # Count total images first (fast extension check only)
     print("Counting images...")
-    image_list = list(get_image_paths(image_folder, recursive))
+    image_list = list(get_image_paths_fast(image_folder, recursive))
     total_images = len(image_list)
-    print(f"Found {total_images} images to process\n")
+    print(f"Found {total_images} potential images to process\n")
     
     # Create a single ExifTool instance for all images (prevents subprocess leak)
     et = None
@@ -297,6 +293,14 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
         total_processed = 0
         for image_path in image_list:
             try:
+                # Validate file format if using metadata mode
+                if output_to == "Metadata":
+                    valid, msg, image_path = validate_file_format(et, image_path, output_to)
+                    if not valid:
+                        print(f"\nSkipping {image_path}: {msg}")
+                        skipped_files.append(os.path.basename(image_path))
+                        continue
+                
                 with Image.open(image_path) as image:
                     processed_image = prepare_image(image, target_size)
                     preds = model.run(None, {model.get_inputs()[0].name: processed_image})[0]
