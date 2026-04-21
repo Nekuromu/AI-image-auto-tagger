@@ -8,6 +8,8 @@ import onnxruntime as rt
 from PIL import Image
 import huggingface_hub
 from exiftool import ExifToolHelper
+from typing import Iterator
+import time
 
 #increase CSV limit for Flag report
 max_int = sys.maxsize
@@ -47,20 +49,24 @@ def download_model(model_repo):
 def prepare_image(image, target_size):
     canvas = Image.new("RGBA", image.size, (255, 255, 255))
     canvas.paste(image, mask=image.split()[3] if image.mode == 'RGBA' else None)
-    image = canvas.convert("RGB")
+    rgb_image = canvas.convert("RGB")
+    canvas.close()  # Close intermediate image
 
     # Pad image to a square
-    max_dim = max(image.size)
-    pad_left = (max_dim - image.size[0]) // 2
-    pad_top = (max_dim - image.size[1]) // 2
+    max_dim = max(rgb_image.size)
+    pad_left = (max_dim - rgb_image.size[0]) // 2
+    pad_top = (max_dim - rgb_image.size[1]) // 2
     padded_image = Image.new("RGB", (max_dim, max_dim), (255, 255, 255))
-    padded_image.paste(image, (pad_left, pad_top))
+    padded_image.paste(rgb_image, (pad_left, pad_top))
+    rgb_image.close()  # Close intermediate image
 
     # Resize
-    padded_image = padded_image.resize((target_size, target_size), Image.BICUBIC)
+    resized_image = padded_image.resize((target_size, target_size), Image.Resampling.BICUBIC)
+    padded_image.close()  # Close intermediate image
 
     # Convert to numpy array
-    image_array = np.asarray(padded_image, dtype=np.float32)[..., [2, 1, 0]]
+    image_array = np.asarray(resized_image, dtype=np.float32)[..., [2, 1, 0]]
+    resized_image.close()  # Close final intermediate image
     
     return np.expand_dims(image_array, axis=0) # Add batch dimension
 
@@ -123,9 +129,16 @@ def process_predictions_with_thresholds(preds, tag_data, character_thresh, gener
 
     return final_tags
 
+# Fast extension check for counting (no ExifTool subprocess overhead)
+def has_image_extension(file_path: str) -> bool:
+    """Quick check if file has a supported image extension."""
+    ext = os.path.splitext(file_path)[1].lower().lstrip('.')
+    return ext in type_map
+
 # Check whether image extensions are set correctly and filter out unsupported ones
-def validate_file_format(file_path: str, output_to) -> tuple:
-   
+# Uses ExifTool instance passed from caller to avoid subprocess overhead
+def validate_file_format(et, file_path: str, output_to) -> tuple:
+    """Validate file format using MIME type check. Requires ExifTool instance."""
     ext = os.path.splitext(file_path)[1].lower().lstrip('.')
     
     if output_to == "Metadata" and ext == "bmp":
@@ -133,9 +146,8 @@ def validate_file_format(file_path: str, output_to) -> tuple:
         return (False, msg, file_path)
     
     try:
-        with ExifToolHelper(encoding="utf-8") as et:
-            metadata = et.get_tags([file_path], 'File:MIMEType')[0]
-            actual_mime = metadata.get('File:MIMEType', '')
+        metadata = et.get_tags([file_path], 'File:MIMEType')[0]
+        actual_mime = metadata.get('File:MIMEType', '')
     except Exception as e:
         msg = f"Error reading metadata: {str(e)}"
         return (False, msg, file_path)
@@ -157,7 +169,7 @@ def validate_file_format(file_path: str, output_to) -> tuple:
             if not os.path.exists(new_file_path):
                 try:
                     os.rename(file_path, new_file_path)
-                    print(f"Auto-corrected extension: Renamed '{os.path.basename(file_path)}' to '{os.path.basename(new_file_path)}'")
+                    print(f"\nAuto-corrected extension: Renamed '{os.path.basename(file_path)}' to '{os.path.basename(new_file_path)}'")
                     return (True, None, new_file_path)
                 except Exception as e:
                     msg = f"Error correcting extension: {str(e)}"
@@ -189,41 +201,41 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
             return [t.strip() for t in tags.split(",") if t.strip()]
         return []
 
-    def update_metadata(image_path, final_tags, overwrite_tags):
+    def update_metadata(et, image_path, final_tags, overwrite_tags):
+        """Update image metadata using a shared ExifTool instance."""
         try:
-            with ExifToolHelper(encoding="utf-8") as et:
-                existing = et.get_tags([image_path], ["IPTC:Keywords", "XMP:Subject"])[0]
-                
-                iptc_list = normalize_tags(existing.get("IPTC:Keywords"))
-                xmp_list = normalize_tags(existing.get("XMP:Subject"))
+            existing = et.get_tags([image_path], ["IPTC:Keywords", "XMP:Subject"])[0]
+            
+            iptc_list = normalize_tags(existing.get("IPTC:Keywords"))
+            xmp_list = normalize_tags(existing.get("XMP:Subject"))
 
-                if not overwrite_tags:
-                    combined_tags = final_tags + iptc_list + xmp_list
-                else:
-                    combined_tags = final_tags
+            if not overwrite_tags:
+                combined_tags = final_tags + iptc_list + xmp_list
+            else:
+                combined_tags = final_tags
 
-                # Remove duplicates while preserving order
-                all_tags = list(dict.fromkeys(combined_tags))
+            # Remove duplicates while preserving order
+            all_tags = list(dict.fromkeys(combined_tags))
 
-                et.set_tags(
-                    [image_path],
-                    tags={
-                        "IPTC:Keywords": all_tags,
-                        "XMP:Subject": all_tags
-                    },
-                    params=["-P", "-overwrite_original"]
-                )
-            print(f"Successfully added tags to {image_path}")
+            et.set_tags(
+                [image_path],
+                tags={
+                    "IPTC:Keywords": all_tags,
+                    "XMP:Subject": all_tags
+                },
+                params=["-P", "-overwrite_original"]
+            )
         except Exception as e:
-            print(f"Error processing {image_path}: {str(e)}")
+            raise Exception(f"Error updating metadata: {str(e)}")
 
-    def process_image_file(image_path, image_folder, output_to, remove_separator, final_tags, overwrite_tags):
+    def process_image_file(et, image_path, image_folder, output_to, remove_separator, final_tags, overwrite_tags):
+        """Process a single image file - write tags to metadata or text file."""
         relative_path = os.path.relpath(image_path, image_folder)
 
         if output_to == "Metadata":
             if remove_separator:
                 final_tags = [tag.replace("_", " ") for tag in final_tags]
-            update_metadata(image_path, final_tags, overwrite_tags)
+            update_metadata(et, image_path, final_tags, overwrite_tags)
         
         if output_to == "Text File":
             # Determine the caption file path
@@ -242,34 +254,84 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
             except Exception as e:
                 print(f"Error processing {caption_file_path}: {str(e)}")
 
-    # Yield image paths with validated file formats
-    def get_image_paths(img_folder: str, recurse: bool) -> iter:
-        
+    # Quick scan for counting - just check extensions (fast)
+    def get_image_paths_fast(img_folder: str, recurse: bool) -> Iterator[str]:
+        """Fast scan that only checks file extensions, no MIME validation."""
         if recurse:
             for root, _, files in os.walk(img_folder):
                 for file in files:
                     file_path = os.path.join(root, file)
-                    if os.path.isfile(file_path):
-                        valid, msg, file_path = validate_file_format(file_path, output_to)
-                        if not valid:
-                            print(f"Skipping {file_path}: {msg}")
-                            skipped_files.append(os.path.basename(file_path))
-                            continue
+                    if os.path.isfile(file_path) and has_image_extension(file_path):
                         yield file_path
         else:
             for file in os.listdir(img_folder):
                 file_path = os.path.join(img_folder, file)
-                if os.path.isfile(file_path):   
-                    valid, msg, file_path = validate_file_format(file_path, output_to)
-                    if not valid:
-                        print(f"Skipping {file_path}: {msg}")
-                        skipped_files.append(os.path.basename(file_path))
-                        continue
+                if os.path.isfile(file_path) and has_image_extension(file_path):
                     yield file_path
 
+    def print_progress_bar(current, total, start_time, bar_length=40):
+        """Display a progress bar with time remaining estimate."""
+        if total == 0:
+            return
+        
+        percent = float(current) / total
+        filled_length = int(bar_length * percent)
+        
+        # Build the bar: filled with █, empty with ░
+        bar = '█' * filled_length + '░' * (bar_length - filled_length)
+        
+        # Calculate time remaining
+        elapsed_time = time.time() - start_time
+        if current > 0:
+            avg_time_per_image = elapsed_time / current
+            remaining_images = total - current
+            eta_seconds = avg_time_per_image * remaining_images
+            
+            # Format ETA nicely
+            hours = int(eta_seconds // 3600)
+            minutes = int((eta_seconds % 3600) // 60)
+            seconds = int(eta_seconds % 60)
+            
+            if hours > 0:
+                eta_str = f"{hours}h {minutes}m {seconds}s"
+            elif minutes > 0:
+                eta_str = f"{minutes}m {seconds}s"
+            else:
+                eta_str = f"{seconds}s"
+            
+            # Images per second
+            speed = current / elapsed_time if elapsed_time > 0 else 0
+            
+            # \r returns cursor to start of line, end='' prevents newline
+            print(f'\r[{bar}] {current}/{total} ({percent*100:.1f}%) | {speed:.1f} img/s | ETA: {eta_str}   ', end='', flush=True)
+        else:
+            print(f'\r[{bar}] {current}/{total} ({percent*100:.1f}%)', end='', flush=True)
+    
+    # Count total images first (fast extension check only)
+    print("Counting images...")
+    image_list = list(get_image_paths_fast(image_folder, recursive))
+    total_images = len(image_list)
+    print(f"Found {total_images} potential images to process\n")
+    
+    # Create a single ExifTool instance for all images (prevents subprocess leak)
+    et = None
+    if output_to == "Metadata":
+        et = ExifToolHelper(encoding="utf-8")
+    
     try:
-        for image_path in get_image_paths(image_folder, recursive):
+        total_processed = 0
+        start_time = time.time()  # Track start time for ETA calculation
+        
+        for image_path in image_list:
             try:
+                # Validate file format if using metadata mode
+                if output_to == "Metadata":
+                    valid, msg, image_path = validate_file_format(et, image_path, output_to)
+                    if not valid:
+                        print(f"\nSkipping {image_path}: {msg}")
+                        skipped_files.append(os.path.basename(image_path))
+                        continue
+                
                 with Image.open(image_path) as image:
                     processed_image = prepare_image(image, target_size)
                     preds = model.run(None, {model.get_inputs()[0].name: processed_image})[0]
@@ -279,22 +341,49 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
                     hide_rating_tags, character_tags_first
                 )
 
-                process_image_file(image_path, image_folder, output_to, remove_separator, final_tags, overwrite_tags)
+                process_image_file(et, image_path, image_folder, output_to, remove_separator, final_tags, overwrite_tags)
 
                 if os.path.basename(image_path) not in skipped_files:
                     processed_files.append(os.path.basename(image_path))
+                    total_processed += 1
+                    
+                    # Update progress bar for every image
+                    print_progress_bar(total_processed, total_images, start_time)
+                        
             except Exception as e:
-                print(f"Error processing {image_path}: {str(e)}")
+                print(f"\nError processing {image_path}: {str(e)}")
                 skipped_files.append(os.path.basename(image_path))
+                # Reprint progress bar after error message
+                print_progress_bar(total_processed, total_images, start_time)
     except FileNotFoundError:
         error_message = f"Error: The specified directory does not exist."
         print(error_message)
         return error_message, "", ""
+    finally:
+        # Clean up ExifTool instance
+        if et is not None:
+            try:
+                et.__exit__(None, None, None)
+            except:
+                pass
     
+    # Print newline after progress bar completes
+    print()
     
     status_message = f"DONE -- Processed files: {len(processed_files)} -- Skipped files: {len(skipped_files)} -- See console for more details"
     print("\033[92mDONE\033[0m")
-    return status_message, "\n".join(processed_files), "\n".join(skipped_files)
+    
+    # Limit output to prevent memory bloat with large batches (30k+ images)
+    # Show first 50 and last 50, or all if fewer than 100
+    def format_file_list(files, limit=50):
+        if len(files) <= limit * 2:
+            return "\n".join(files)
+        return "\n".join(files[:limit]) + f"\n\n... [{len(files) - limit*2} files omitted] ...\n\n" + "\n".join(files[-limit:])
+    
+    processed_output = format_file_list(processed_files)
+    skipped_output = format_file_list(skipped_files)
+    
+    return status_message, processed_output, skipped_output
 
 iface = gr.Interface(
     fn=tag_images,

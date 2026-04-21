@@ -1,1 +1,17 @@
 captions/
+
+# Python virtual environment
+venv/
+__pycache__/
+*.pyc
+
+# ExifTool binaries (users download their own)
+exiftool.exe
+exiftool_files/
+
+# Model cache (auto-downloaded from HuggingFace)
+.cache/
+
+# Gradio temporary files
+.gradio/
+flagged/
