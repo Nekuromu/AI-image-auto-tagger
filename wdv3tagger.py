@@ -189,41 +189,41 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
             return [t.strip() for t in tags.split(",") if t.strip()]
         return []
 
-    def update_metadata(image_path, final_tags, overwrite_tags):
+    def update_metadata(et, image_path, final_tags, overwrite_tags):
+        """Update image metadata using a shared ExifTool instance."""
         try:
-            with ExifToolHelper(encoding="utf-8") as et:
-                existing = et.get_tags([image_path], ["IPTC:Keywords", "XMP:Subject"])[0]
-                
-                iptc_list = normalize_tags(existing.get("IPTC:Keywords"))
-                xmp_list = normalize_tags(existing.get("XMP:Subject"))
+            existing = et.get_tags([image_path], ["IPTC:Keywords", "XMP:Subject"])[0]
+            
+            iptc_list = normalize_tags(existing.get("IPTC:Keywords"))
+            xmp_list = normalize_tags(existing.get("XMP:Subject"))
 
-                if not overwrite_tags:
-                    combined_tags = final_tags + iptc_list + xmp_list
-                else:
-                    combined_tags = final_tags
+            if not overwrite_tags:
+                combined_tags = final_tags + iptc_list + xmp_list
+            else:
+                combined_tags = final_tags
 
-                # Remove duplicates while preserving order
-                all_tags = list(dict.fromkeys(combined_tags))
+            # Remove duplicates while preserving order
+            all_tags = list(dict.fromkeys(combined_tags))
 
-                et.set_tags(
-                    [image_path],
-                    tags={
-                        "IPTC:Keywords": all_tags,
-                        "XMP:Subject": all_tags
-                    },
-                    params=["-P", "-overwrite_original"]
-                )
-            print(f"Successfully added tags to {image_path}")
+            et.set_tags(
+                [image_path],
+                tags={
+                    "IPTC:Keywords": all_tags,
+                    "XMP:Subject": all_tags
+                },
+                params=["-P", "-overwrite_original"]
+            )
         except Exception as e:
-            print(f"Error processing {image_path}: {str(e)}")
+            raise Exception(f"Error updating metadata: {str(e)}")
 
-    def process_image_file(image_path, image_folder, output_to, remove_separator, final_tags, overwrite_tags):
+    def process_image_file(et, image_path, image_folder, output_to, remove_separator, final_tags, overwrite_tags):
+        """Process a single image file - write tags to metadata or text file."""
         relative_path = os.path.relpath(image_path, image_folder)
 
         if output_to == "Metadata":
             if remove_separator:
                 final_tags = [tag.replace("_", " ") for tag in final_tags]
-            update_metadata(image_path, final_tags, overwrite_tags)
+            update_metadata(et, image_path, final_tags, overwrite_tags)
         
         if output_to == "Text File":
             # Determine the caption file path
@@ -267,7 +267,13 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
                         continue
                     yield file_path
 
+    # Create a single ExifTool instance for all images (prevents subprocess leak)
+    et = None
+    if output_to == "Metadata":
+        et = ExifToolHelper(encoding="utf-8")
+    
     try:
+        total_processed = 0
         for image_path in get_image_paths(image_folder, recursive):
             try:
                 with Image.open(image_path) as image:
@@ -279,10 +285,16 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
                     hide_rating_tags, character_tags_first
                 )
 
-                process_image_file(image_path, image_folder, output_to, remove_separator, final_tags, overwrite_tags)
+                process_image_file(et, image_path, image_folder, output_to, remove_separator, final_tags, overwrite_tags)
 
                 if os.path.basename(image_path) not in skipped_files:
                     processed_files.append(os.path.basename(image_path))
+                    total_processed += 1
+                    
+                    # Progress indicator every 100 images
+                    if total_processed % 100 == 0:
+                        print(f"\033[94mProgress: {total_processed} images processed...\033[0m")
+                        
             except Exception as e:
                 print(f"Error processing {image_path}: {str(e)}")
                 skipped_files.append(os.path.basename(image_path))
@@ -290,6 +302,13 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
         error_message = f"Error: The specified directory does not exist."
         print(error_message)
         return error_message, "", ""
+    finally:
+        # Clean up ExifTool instance
+        if et is not None:
+            try:
+                et.__exit__(None, None, None)
+            except:
+                pass
     
     
     status_message = f"DONE -- Processed files: {len(processed_files)} -- Skipped files: {len(skipped_files)} -- See console for more details"
