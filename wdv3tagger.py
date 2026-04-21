@@ -184,7 +184,7 @@ def validate_file_format(et, file_path: str, output_to) -> tuple:
     return (True, None, file_path)
 
 # MAIN
-def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thresh=0.85, hide_rating_tags=True, character_tags_first=False, remove_separator=False, overwrite_tags=False, output_to="Metadata"):
+def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thresh=0.85, hide_rating_tags=True, character_tags_first=False, remove_separator=False, overwrite_tags=False, output_to="Metadata", start_from=1):
     if not image_folder:
         return "Error: Please provide a directory.", "", ""
     os.makedirs(output_path, exist_ok=True)
@@ -314,7 +314,16 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
     print("Counting images...")
     image_list = list(get_image_paths_fast(image_folder, recursive))
     total_images = len(image_list)
-    print(f"Found {total_images} potential images to process\n")
+    print(f"Found {total_images} potential images to process")
+    
+    # Apply start_from offset (resume feature)
+    if start_from > 1:
+        if start_from > total_images:
+            return f"Error: start_from ({start_from}) exceeds total images ({total_images})", "", ""
+        image_list = image_list[start_from-1:]
+        print(f"Resuming from image #{start_from} ({total_images - start_from + 1} remaining)\n")
+    else:
+        print()
     
     # Create a single ExifTool instance for all images (prevents subprocess leak)
     et = None
@@ -325,7 +334,8 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
         total_processed = 0
         start_time = time.time()  # Track start time for ETA calculation
         
-        for image_path in image_list:
+        # Adjust loop to show actual position in original list
+        for idx, image_path in enumerate(image_list, start=start_from):
             current_file = os.path.basename(image_path)
             
             try:
@@ -333,7 +343,7 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
                 if output_to == "Metadata":
                     valid, msg, image_path = validate_file_format(et, image_path, output_to)
                     if not valid:
-                        print(f"\nSkipping {image_path}: {msg}")
+                        print(f"\n[{idx}/{total_images}] Skipping {image_path}: {msg}")
                         skipped_files.append(os.path.basename(image_path))
                         continue
                 
@@ -352,12 +362,14 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
                     processed_files.append(os.path.basename(image_path))
                     total_processed += 1
                     
-                    # Update progress bar for every image
-                    print_progress_bar(total_processed, total_images, start_time, current_file)
+                    # Update progress bar - use idx for actual position, not total_processed
+                    print_progress_bar(idx, total_images, start_time, current_file)
                         
             except Exception as e:
-                print(f"\nError processing {image_path}: {str(e)}")
+                print(f"\n[{idx}/{total_images}] Error processing {image_path}: {str(e)}")
                 skipped_files.append(os.path.basename(image_path))
+                # Reprint progress bar after error message
+                print_progress_bar(idx, total_images, start_time, current_file)
                 # Reprint progress bar after error message
                 print_progress_bar(total_processed, total_images, start_time, current_file)
     except FileNotFoundError:
@@ -401,8 +413,8 @@ iface = gr.Interface(
         gr.Checkbox(label="Character tags first"),
         gr.Checkbox(label="Remove separator", value=False),
         gr.Checkbox(label="Overwrite existing metadata tags", value=False),
-        gr.Radio(choices=["Text File", "Metadata"], value="Metadata", label="Output to")
-        
+        gr.Radio(choices=["Text File", "Metadata"], value="Metadata", label="Output to"),
+        gr.Number(label="Start from image # (for resume)", value=1, precision=0, minimum=1)
     ],
     outputs=[
         gr.Textbox(label="Status"),
