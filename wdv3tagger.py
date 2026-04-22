@@ -269,7 +269,7 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
                 if os.path.isfile(file_path) and has_image_extension(file_path):
                     yield file_path
 
-    def print_progress_bar(current, total, start_time, current_file="", bar_length=40):
+    def print_progress_bar(current, total, start_time, current_file="", bar_length=40, start_index=1):
         """Display a progress bar with time remaining estimate and current file."""
         if total == 0:
             return
@@ -280,10 +280,12 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
         # Build the bar: filled with █, empty with ░
         bar = '█' * filled_length + '░' * (bar_length - filled_length)
         
-        # Calculate time remaining
+        # Calculate time remaining based on images processed in THIS run
         elapsed_time = time.time() - start_time
-        if current > 0:
-            avg_time_per_image = elapsed_time / current
+        images_processed = current - start_index + 1
+        
+        if images_processed > 0:
+            avg_time_per_image = elapsed_time / images_processed
             remaining_images = total - current
             eta_seconds = avg_time_per_image * remaining_images
             
@@ -299,8 +301,8 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
             else:
                 eta_str = f"{seconds}s"
             
-            # Images per second
-            speed = current / elapsed_time if elapsed_time > 0 else 0
+            # Images per second (based on THIS run only)
+            speed = images_processed / elapsed_time if elapsed_time > 0 else 0
             
             # Truncate filename if too long (keep first 30 chars)
             display_file = current_file[:30] + "..." if len(current_file) > 30 else current_file
@@ -339,7 +341,7 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
             current_file = os.path.basename(image_path)
             
             # Show progress bar at START of processing (so you see it even if it hangs)
-            print_progress_bar(idx, total_images, start_time, current_file)
+            print_progress_bar(idx, total_images, start_time, current_file, start_index=start_from)
             
             try:
                 # Validate file format if using metadata mode
