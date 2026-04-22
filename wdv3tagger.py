@@ -307,10 +307,10 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
             # Truncate filename if too long (keep first 30 chars)
             display_file = current_file[:30] + "..." if len(current_file) > 30 else current_file
             
-            # \r returns cursor to start of line, end='' prevents newline
-            print(f'\r[{bar}] {current}/{total} ({percent*100:.1f}%) | {speed:.1f} img/s | ETA: {eta_str} | {display_file}     ', end='', flush=True)
+            # \r returns cursor to start of line, \033[K clears to end of line (removes leftover chars)
+            print(f'\r[{bar}] {current}/{total} ({percent*100:.1f}%) | {speed:.1f} img/s | ETA: {eta_str} | {display_file}\033[K', end='', flush=True)
         else:
-            print(f'\r[{bar}] {current}/{total} ({percent*100:.1f}%)', end='', flush=True)
+            print(f'\r[{bar}] {current}/{total} ({percent*100:.1f}%)\033[K', end='', flush=True)
     
     # Count total images first (fast extension check only)
     print("Counting images...")
