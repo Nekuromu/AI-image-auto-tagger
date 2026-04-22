@@ -338,6 +338,9 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
         for idx, image_path in enumerate(image_list, start=start_from):
             current_file = os.path.basename(image_path)
             
+            # Show progress bar at START of processing (so you see it even if it hangs)
+            print_progress_bar(idx, total_images, start_time, current_file)
+            
             try:
                 # Validate file format if using metadata mode
                 if output_to == "Metadata":
@@ -361,17 +364,10 @@ def tag_images(image_folder, recursive=False, general_thresh=0.35, character_thr
                 if os.path.basename(image_path) not in skipped_files:
                     processed_files.append(os.path.basename(image_path))
                     total_processed += 1
-                    
-                    # Update progress bar - use idx for actual position, not total_processed
-                    print_progress_bar(idx, total_images, start_time, current_file)
                         
             except Exception as e:
                 print(f"\n[{idx}/{total_images}] Error processing {image_path}: {str(e)}")
                 skipped_files.append(os.path.basename(image_path))
-                # Reprint progress bar after error message
-                print_progress_bar(idx, total_images, start_time, current_file)
-                # Reprint progress bar after error message
-                print_progress_bar(total_processed, total_images, start_time, current_file)
     except FileNotFoundError:
         error_message = f"Error: The specified directory does not exist."
         print(error_message)
